@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
 		"name": "TaskForge — API Collection",
-		"description": "Full API collection for TaskForge after Phase 1 authentication.\n\nRun the Auth folder first (Register or Login) to populate token/userId variables, then use the Tasks folder.\n\nVariables are auto-chained between requests via test scripts.",
+		"description": "Full API collection for TaskForge after Phase 3 session management & hardening.\n\nRun the Auth folder first (Register or Login) to populate token/userId variables, then use the Tasks folder.\n\nAuthenticated requests include an explicit Authorization: Bearer {{accessToken}} header.\n\nPhase 3 changes:\n- Refresh token rotation (new token on each refresh)\n- /me endpoint uses JWT auth (no query param)\n- All task endpoints require authentication\n- Security response headers (Cache-Control, CSP)\n- Refresh token reuse detection",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"variable": [
@@ -18,6 +18,11 @@
 		},
 		{
 			"key": "refreshToken",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "previousRefreshToken",
 			"value": "",
 			"type": "string"
 		},
@@ -295,8 +300,18 @@
 					"response": []
 				},
 				{
-					"name": "7. Refresh Token",
+					"name": "7. Refresh Token (with rotation)",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Save the current refresh token before rotation",
+									"pm.collectionVariables.set('previousRefreshToken', pm.collectionVariables.get('refreshToken'));"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {
@@ -304,7 +319,10 @@
 								"exec": [
 									"if (pm.response.code === 200) {",
 									"    var json = pm.response.json();",
+									"    var oldRefreshToken = pm.collectionVariables.get('previousRefreshToken');",
+									"",
 									"    pm.collectionVariables.set('accessToken', json.accessToken);",
+									"    pm.collectionVariables.set('refreshToken', json.refreshToken);",
 									"",
 									"    pm.test('Status is 200 OK', function () {",
 									"        pm.response.to.have.status(200);",
@@ -312,8 +330,13 @@
 									"    pm.test('New access token returned', function () {",
 									"        pm.expect(json.accessToken).to.be.a('string').and.not.empty;",
 									"    });",
-									"    pm.test('Same refresh token returned', function () {",
-									"        pm.expect(json.refreshToken).to.eql(pm.collectionVariables.get('refreshToken'));",
+									"    pm.test('Refresh token rotated — new token is different', function () {",
+									"        pm.expect(json.refreshToken).to.be.a('string').and.not.empty;",
+									"        pm.expect(json.refreshToken).to.not.eql(oldRefreshToken);",
+									"    });",
+									"    pm.test('User info returned', function () {",
+									"        pm.expect(json.user).to.be.an('object');",
+									"        pm.expect(json.user.id).to.eql(pm.collectionVariables.get('userId'));",
 									"    });",
 									"}"
 								]
@@ -341,7 +364,88 @@
 					"response": []
 				},
 				{
-					"name": "8. Refresh — Invalid Token (401)",
+					"name": "8. Refresh — Reuse Old Token (401, rotation detection)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 401 — old token rejected (reuse detection)', function () {",
+									"    pm.response.to.have.status(401);",
+									"});",
+									"pm.test('Error message returned', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.detail).to.eql('Invalid or expired token');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"refreshToken\": \"{{previousRefreshToken}}\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/auth/refresh",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "auth", "refresh"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "9. Re-login after reuse revocation",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var json = pm.response.json();",
+									"    pm.collectionVariables.set('accessToken', json.accessToken);",
+									"    pm.collectionVariables.set('refreshToken', json.refreshToken);",
+									"    pm.collectionVariables.set('userId', json.user.id);",
+									"",
+									"    pm.test('Status is 200 OK — re-login successful', function () {",
+									"        pm.response.to.have.status(200);",
+									"    });",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"alice@example.com\",\n    \"password\": \"Secret123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/auth/login",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "auth", "login"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "10. Refresh — Invalid Token (401)",
 					"event": [
 						{
 							"listen": "test",
@@ -380,7 +484,7 @@
 					"response": []
 				},
 				{
-					"name": "9. Get Current User",
+					"name": "11. Get Current User (from JWT)",
 					"event": [
 						{
 							"listen": "test",
@@ -404,30 +508,29 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
-							"raw": "{{baseUrl}}/api/v1/auth/me?userId={{userId}}",
+							"raw": "{{baseUrl}}/api/v1/auth/me",
 							"host": ["{{baseUrl}}"],
-							"path": ["api", "v1", "auth", "me"],
-							"query": [
-								{
-									"key": "userId",
-									"value": "{{userId}}"
-								}
-							]
+							"path": ["api", "v1", "auth", "me"]
 						}
 					},
 					"response": []
 				},
 				{
-					"name": "10. Get Current User — Not Found (401)",
+					"name": "12. Get Current User — No Token (401)",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"type": "text/javascript",
 								"exec": [
-									"pm.test('Status is 401 Unauthorized', function () {",
+									"pm.test('Status is 401 — authentication required', function () {",
 									"    pm.response.to.have.status(401);",
 									"});"
 								]
@@ -438,21 +541,58 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{baseUrl}}/api/v1/auth/me?userId=00000000-0000-0000-0000-000000000000",
+							"raw": "{{baseUrl}}/api/v1/auth/me",
 							"host": ["{{baseUrl}}"],
-							"path": ["api", "v1", "auth", "me"],
-							"query": [
-								{
-									"key": "userId",
-									"value": "00000000-0000-0000-0000-000000000000"
-								}
-							]
+							"path": ["api", "v1", "auth", "me"]
 						}
 					},
 					"response": []
 				},
 				{
-					"name": "11. Logout",
+					"name": "13. Security Headers Check",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Cache-Control: no-store header present', function () {",
+									"    var cacheControl = pm.response.headers.get('Cache-Control');",
+									"    pm.expect(cacheControl).to.include('no-cache');",
+									"    pm.expect(cacheControl).to.include('no-store');",
+									"});",
+									"pm.test('Content-Security-Policy header present', function () {",
+									"    var csp = pm.response.headers.get('Content-Security-Policy');",
+									"    pm.expect(csp).to.include(\"script-src 'self'\");",
+									"});",
+									"pm.test('X-Frame-Options header present', function () {",
+									"    pm.expect(pm.response.headers.get('X-Frame-Options')).to.eql('DENY');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/auth/me",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "auth", "me"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "14. Logout",
 					"event": [
 						{
 							"listen": "test",
@@ -472,6 +612,10 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
 							}
 						],
 						"body": {
@@ -487,7 +631,38 @@
 					"response": []
 				},
 				{
-					"name": "12. Refresh After Logout (401)",
+					"name": "15. Access After Logout — Denylisted Token (401)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 401 — denylisted token rejected', function () {",
+									"    pm.response.to.have.status(401);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/auth/me",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "auth", "me"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "16. Refresh After Logout (401)",
 					"event": [
 						{
 							"listen": "test",
@@ -520,13 +695,91 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "17. Re-login (for Tasks folder)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var json = pm.response.json();",
+									"    pm.collectionVariables.set('accessToken', json.accessToken);",
+									"    pm.collectionVariables.set('refreshToken', json.refreshToken);",
+									"    pm.collectionVariables.set('userId', json.user.id);",
+									"",
+									"    pm.test('Status is 200 OK', function () {",
+									"        pm.response.to.have.status(200);",
+									"    });",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"alice@example.com\",\n    \"password\": \"Secret123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/auth/login",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "auth", "login"]
+						}
+					},
+					"response": []
 				}
 			]
 		},
 		{
 			"name": "Tasks",
-			"description": "Task management endpoints — CRUD, stats, assign",
+			"description": "Task management endpoints — CRUD, stats, assign.\n\nAll endpoints require authentication (Bearer token). Run Auth folder first to populate the accessToken variable.\n\nEvery request includes an explicit Authorization: Bearer {{accessToken}} header.",
 			"item": [
+				{
+					"name": "0. Tasks — No Token (401)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 401 — authentication required', function () {",
+									"    pm.response.to.have.status(401);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/tasks?page=0&size=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "tasks"],
+							"query": [
+								{
+									"key": "page",
+									"value": "0"
+								},
+								{
+									"key": "size",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": []
+				},
 				{
 					"name": "1. List Tasks",
 					"event": [
@@ -550,7 +803,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks?page=0&size=10",
 							"host": ["{{baseUrl}}"],
@@ -592,7 +850,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks?status=TODO&page=0&size=10",
 							"host": ["{{baseUrl}}"],
@@ -632,7 +895,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks?assigneeId={{userId}}&page=0&size=10",
 							"host": ["{{baseUrl}}"],
@@ -678,7 +946,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks/stats",
 							"host": ["{{baseUrl}}"],
@@ -721,6 +994,10 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
 							}
 						],
 						"body": {
@@ -760,6 +1037,10 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
 							}
 						],
 						"body": {
@@ -798,7 +1079,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}",
 							"host": ["{{baseUrl}}"],
@@ -828,7 +1114,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks/00000000-0000-0000-0000-000000000000",
 							"host": ["{{baseUrl}}"],
@@ -864,6 +1155,10 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
 							}
 						],
 						"body": {
@@ -903,6 +1198,10 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
 							}
 						],
 						"body": {
@@ -940,7 +1239,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks/b2c3d4e5-0001-0001-0001-000000000001",
 							"host": ["{{baseUrl}}"],
@@ -966,7 +1270,12 @@
 					],
 					"request": {
 						"method": "DELETE",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}",
 							"host": ["{{baseUrl}}"],
@@ -992,7 +1301,12 @@
 					],
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}",
 							"host": ["{{baseUrl}}"],

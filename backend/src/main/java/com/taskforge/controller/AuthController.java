@@ -52,8 +52,8 @@ public class AuthController {
     }
 
     @GetMapping("/me")
-    @Operation(summary = "Get current user info (temporary — uses query param until JWT filter)")
-    public UserResponse me(@RequestParam UUID userId) {
+    @Operation(summary = "Get current authenticated user info")
+    public UserResponse me(@org.springframework.security.core.annotation.AuthenticationPrincipal UUID userId) {
         return authService.getCurrentUser(userId);
     }
 }

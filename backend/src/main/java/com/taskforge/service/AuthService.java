@@ -25,6 +25,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -107,6 +108,13 @@ public class AuthService {
         var refreshToken = refreshTokenRepository.findByTokenHash(tokenHash)
                 .orElseThrow(InvalidTokenException::new);
 
+        // Reuse detection: if token was already invalidated, this is a potential theft
+        if (refreshToken.isInvalidated()) {
+            log.warn("Refresh token reuse detected for user {}. Revoking all tokens.", refreshToken.getUserId());
+            refreshTokenRepository.deleteByUserId(refreshToken.getUserId());
+            throw new InvalidTokenException();
+        }
+
         if (Instant.now().isAfter(refreshToken.getExpiresAt())) {
             throw new InvalidTokenException();
         }
@@ -116,16 +124,27 @@ public class AuthService {
             throw new InvalidTokenException();
         }
 
-        refreshToken.updateLastUsedAt();
+        // Rotation: invalidate old token, issue new one
+        refreshToken.invalidate();
         refreshTokenRepository.save(refreshToken);
 
         var user = userRepository.findById(refreshToken.getUserId())
                 .orElseThrow(InvalidTokenException::new);
 
         var accessToken = jwtService.generateAccessToken(user.getId());
-        log.info("Token refreshed for user: {}", user.getId());
+        var newRefreshTokenValue = jwtService.generateRefreshTokenValue();
 
-        return new AuthResponse(accessToken, request.refreshToken(), userMapper.toResponse(user));
+        var newRefreshToken = RefreshToken.builder()
+                .userId(user.getId())
+                .tokenHash(jwtService.hashToken(newRefreshTokenValue))
+                .expiresAt(Instant.now().plus(jwtService.getRefreshTokenExpiry()))
+                .build();
+        newRefreshToken.updateLastUsedAt();
+        refreshTokenRepository.save(newRefreshToken);
+
+        log.info("Token refreshed with rotation for user: {}", user.getId());
+
+        return new AuthResponse(accessToken, newRefreshTokenValue, userMapper.toResponse(user));
     }
 
     @Transactional
@@ -163,6 +182,17 @@ public class AuthService {
         refreshTokenRepository.save(refreshToken);
 
         return new AuthResponse(accessToken, refreshTokenValue, userMapper.toResponse(user));
+    }
+
+    @Scheduled(fixedRate = 3600000) // every hour
+    @Transactional
+    public void cleanupExpiredTokens() {
+        var now = Instant.now();
+        int denylistCount = tokenDenylistRepository.deleteExpiredEntries(now);
+        int refreshCount = refreshTokenRepository.deleteExpiredTokens(now);
+        if (denylistCount > 0 || refreshCount > 0) {
+            log.info("Token cleanup: removed {} denylist entries, {} expired refresh tokens", denylistCount, refreshCount);
+        }
     }
 
     private void auditLogin(String email, boolean success, String failureReason, String ipAddress) {

@@ -2,6 +2,7 @@ package com.taskforge.service;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.*;
 
 import com.taskforge.dto.request.LoginRequest;
@@ -198,11 +199,13 @@ class AuthServiceTest {
     class Refresh {
 
         @Test
-        @DisplayName("should return new access token when refresh token is valid and not idle")
+        @DisplayName("should return new access token and rotated refresh token when token is valid and not idle")
         void shouldRefreshSuccessfully() {
             // Arrange
             var rawToken = "raw-refresh-token";
+            var rawNewToken = "rotated-refresh-token";
             var tokenHash = "hashed-refresh-token";
+            var newTokenHash = "hashed-rotated-token";
             var userId = UUID.randomUUID();
             var user = mock(User.class);
             var refreshToken = mock(RefreshToken.class);
@@ -210,6 +213,7 @@ class AuthServiceTest {
 
             when(jwtService.hashToken(rawToken)).thenReturn(tokenHash);
             when(refreshTokenRepository.findByTokenHash(tokenHash)).thenReturn(Optional.of(refreshToken));
+            when(refreshToken.isInvalidated()).thenReturn(false);
             when(refreshToken.getExpiresAt()).thenReturn(Instant.now().plus(Duration.ofDays(1)));
             when(refreshToken.getLastUsedAt()).thenReturn(Instant.now().minus(Duration.ofMinutes(5)));
             when(refreshToken.getUserId()).thenReturn(userId);
@@ -217,6 +221,10 @@ class AuthServiceTest {
             when(userRepository.findById(userId)).thenReturn(Optional.of(user));
             when(user.getId()).thenReturn(userId);
             when(jwtService.generateAccessToken(userId)).thenReturn("new-access-token");
+            when(jwtService.generateRefreshTokenValue()).thenReturn(rawNewToken);
+            when(jwtService.hashToken(rawNewToken)).thenReturn(newTokenHash);
+            when(jwtService.getRefreshTokenExpiry()).thenReturn(Duration.ofDays(7));
+            when(refreshTokenRepository.save(argThat(rt -> rt != refreshToken))).thenAnswer(inv -> inv.getArgument(0));
             when(userMapper.toResponse(user)).thenReturn(expectedUserResponse);
 
             // Act
@@ -224,9 +232,11 @@ class AuthServiceTest {
 
             // Assert
             assertThat(result.accessToken()).isEqualTo("new-access-token");
-            assertThat(result.refreshToken()).isEqualTo(rawToken);
+            assertThat(result.refreshToken()).isEqualTo(rawNewToken);
             assertThat(result.user()).isEqualTo(expectedUserResponse);
-            verify(refreshToken).updateLastUsedAt();
+            // Old token must be invalidated and saved; new token is a fresh builder object
+            verify(refreshToken).invalidate();
+            verify(refreshTokenRepository, times(2)).save(any(RefreshToken.class));
         }
 
         @Test

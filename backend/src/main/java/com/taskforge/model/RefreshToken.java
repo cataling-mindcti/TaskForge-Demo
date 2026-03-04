@@ -32,6 +32,9 @@ public class RefreshToken {
 
     private Instant lastUsedAt;
 
+    @Column(nullable = false)
+    private boolean invalidated;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -42,5 +45,9 @@ public class RefreshToken {
 
     public void updateLastUsedAt() {
         this.lastUsedAt = Instant.now();
+    }
+
+    public void invalidate() {
+        this.invalidated = true;
     }
 }

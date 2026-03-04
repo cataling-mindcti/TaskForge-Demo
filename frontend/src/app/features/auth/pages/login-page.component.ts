@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject, OnInit, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
@@ -30,6 +30,12 @@ import { AuthStore } from '../store/auth.store';
       </mat-card-header>
 
       <mat-card-content>
+        @if (sessionMessage()) {
+          <div class="info-banner" role="status">
+            <mat-icon>info_outline</mat-icon>
+            <span>{{ sessionMessage() }}</span>
+          </div>
+        }
         @if (store.error()) {
           <div class="error-banner" role="alert">
             <mat-icon>error_outline</mat-icon>
@@ -138,6 +144,20 @@ import { AuthStore } from '../store/auth.store';
       background-color: #3d1c1c;
       color: #f5c6cb;
     }
+    .info-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+      border-radius: 4px;
+      background-color: #e3f2fd;
+      color: #0d47a1;
+    }
+    :host-context(body.dark-theme) .info-banner {
+      background-color: #1a237e;
+      color: #bbdefb;
+    }
     mat-card-actions {
       padding: 8px 0;
     }
@@ -146,16 +166,27 @@ import { AuthStore } from '../store/auth.store';
 export class LoginPageComponent implements OnInit {
   protected readonly store = inject(AuthStore);
   private readonly fb = inject(FormBuilder);
+  private readonly route = inject(ActivatedRoute);
 
   protected readonly hidePassword = signal(true);
+  protected readonly sessionMessage = signal<string | null>(null);
 
   protected readonly form = this.fb.nonNullable.group({
     email: ['', [Validators.required, Validators.email]],
     password: ['', [Validators.required]],
   });
 
+  private static readonly KNOWN_MESSAGES: Record<string, string> = {
+    'session-expired': 'Your session has expired due to inactivity.',
+    'logged-out': 'You have been logged out.',
+  };
+
   ngOnInit(): void {
     this.store.clearError();
+    const messageKey = this.route.snapshot.queryParamMap.get('message');
+    if (messageKey && LoginPageComponent.KNOWN_MESSAGES[messageKey]) {
+      this.sessionMessage.set(LoginPageComponent.KNOWN_MESSAGES[messageKey]);
+    }
   }
 
   onSubmit(): void {

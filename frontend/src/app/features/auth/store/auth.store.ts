@@ -1,9 +1,10 @@
-import { computed, inject } from '@angular/core';
+import { computed, effect, inject } from '@angular/core';
 import { Router } from '@angular/router';
 import {
   patchState,
   signalStore,
   withComputed,
+  withHooks,
   withMethods,
   withState,
 } from '@ngrx/signals';
@@ -16,6 +17,7 @@ import {
   RegisterRequest,
   UserResponse,
 } from '@shared/models/auth.model';
+import { IdleService, IdleState } from '@core/services/idle.service';
 
 const ACCESS_TOKEN_KEY = 'taskforge-access-token';
 const REFRESH_TOKEN_KEY = 'taskforge-refresh-token';
@@ -61,7 +63,12 @@ export const AuthStore = signalStore(
     ),
   })),
   withMethods(
-    (store, authApi = inject(AuthApiService), router = inject(Router)) => ({
+    (
+      store,
+      authApi = inject(AuthApiService),
+      router = inject(Router),
+      idleService = inject(IdleService)
+    ) => ({
       initializeFromStorage(): void {
         const accessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
         const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
@@ -71,6 +78,7 @@ export const AuthStore = signalStore(
           try {
             const user = JSON.parse(userJson) as UserResponse;
             patchState(store, { user, accessToken, refreshToken });
+            idleService.start();
           } catch {
             clearTokens();
           }
@@ -90,6 +98,7 @@ export const AuthStore = signalStore(
                   refreshToken: response.refreshToken,
                   loading: false,
                 });
+                idleService.start();
                 router.navigate(['/dashboard'], {
                   queryParams: { registered: 'true' },
                 });
@@ -120,6 +129,7 @@ export const AuthStore = signalStore(
                   refreshToken: response.refreshToken,
                   loading: false,
                 });
+                idleService.start();
                 const returnUrl =
                   localStorage.getItem('taskforge-return-url') ?? '/dashboard';
                 localStorage.removeItem('taskforge-return-url');
@@ -138,7 +148,7 @@ export const AuthStore = signalStore(
         )
       ),
 
-      logout(): void {
+      logout(message?: string): void {
         const accessToken = store.accessToken();
         if (accessToken) {
           authApi.logout({ accessToken }).subscribe({
@@ -147,6 +157,7 @@ export const AuthStore = signalStore(
             },
           });
         }
+        idleService.stop();
         clearTokens();
         patchState(store, {
           user: null,
@@ -154,7 +165,11 @@ export const AuthStore = signalStore(
           refreshToken: null,
           error: null,
         });
-        router.navigate(['/login']);
+        if (message) {
+          router.navigate(['/login'], { queryParams: { message } });
+        } else {
+          router.navigate(['/login']);
+        }
       },
 
       refreshToken(): void {
@@ -176,6 +191,7 @@ export const AuthStore = signalStore(
             });
           },
           error: () => {
+            idleService.stop();
             clearTokens();
             patchState(store, initialState);
             router.navigate(['/login']);
@@ -183,9 +199,29 @@ export const AuthStore = signalStore(
         });
       },
 
+      updateTokens(response: AuthResponse): void {
+        patchState(store, {
+          user: response.user,
+          accessToken: response.accessToken,
+          refreshToken: response.refreshToken,
+        });
+      },
+
       clearError(): void {
         patchState(store, { error: null });
       },
     })
-  )
+  ),
+  withHooks({
+    onInit(store) {
+      const idleService = inject(IdleService);
+
+      effect(() => {
+        const state: IdleState = idleService.state();
+        if (state === 'expired' && store.isAuthenticated()) {
+          store.logout('session-expired');
+        }
+      });
+    },
+  })
 );

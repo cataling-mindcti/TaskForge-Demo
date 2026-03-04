@@ -1,10 +1,20 @@
 import { HttpEvent, HttpHandlerFn, HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 import { inject } from '@angular/core';
-import { BehaviorSubject, catchError, filter, Observable, switchMap, take, throwError } from 'rxjs';
+import {
+  BehaviorSubject,
+  catchError,
+  filter,
+  Observable,
+  switchMap,
+  take,
+  throwError,
+  timeout,
+} from 'rxjs';
 import { AuthStore } from '@features/auth/store/auth.store';
 import { AuthApiService } from '@features/auth/services/auth-api.service';
 
 const AUTH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh'];
+const REFRESH_TIMEOUT_MS = 10000;
 
 let isRefreshing = false;
 const refreshSubject = new BehaviorSubject<string | null>(null);
@@ -16,6 +26,17 @@ function isAuthEndpoint(url: string): boolean {
 function addToken(req: HttpRequest<unknown>, token: string): HttpRequest<unknown> {
   return req.clone({
     setHeaders: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// Listen for storage events to coordinate refresh across tabs
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'taskforge-access-token' && event.newValue) {
+      // Another tab completed a refresh — use the new token
+      isRefreshing = false;
+      refreshSubject.next(event.newValue);
+    }
   });
 }
 
@@ -63,23 +84,32 @@ function handleRefresh(
     return authApi.refresh({ refreshToken }).pipe(
       switchMap((response) => {
         isRefreshing = false;
+        // Update both localStorage and the in-memory store
         localStorage.setItem('taskforge-access-token', response.accessToken);
         localStorage.setItem('taskforge-refresh-token', response.refreshToken);
         localStorage.setItem('taskforge-user', JSON.stringify(response.user));
+        authStore.updateTokens(response);
         refreshSubject.next(response.accessToken);
         return next(addToken(req, response.accessToken));
       }),
       catchError((err) => {
         isRefreshing = false;
+        refreshSubject.next(null);
         authStore.logout();
         return throwError(() => err);
       })
     );
   }
 
+  // Queue concurrent requests — wait for the in-progress refresh to complete
   return refreshSubject.pipe(
     filter((token): token is string => token !== null),
     take(1),
-    switchMap((token) => next(addToken(req, token)))
+    timeout(REFRESH_TIMEOUT_MS),
+    switchMap((token) => next(addToken(req, token))),
+    catchError((err) => {
+      authStore.logout();
+      return throwError(() => err);
+    })
   );
 }
