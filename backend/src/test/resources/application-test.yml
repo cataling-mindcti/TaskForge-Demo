@@ -1,0 +1,23 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/taskforge_db
+    username: taskforge
+    password: taskforge_dev
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    clean-disabled: false
+
+app:
+  jwt:
+    secret: test-secret-that-is-at-least-256-bits-long-for-hs256-signing
+    access-token-expiry: 15m
+    refresh-token-expiry: 7d
+    idle-timeout: 30m
+  auth:
+    max-failed-attempts: 5
+    lockout-duration: 15m

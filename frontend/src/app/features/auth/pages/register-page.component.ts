@@ -30,9 +30,19 @@ function passwordStrengthValidator(control: AbstractControl): ValidationErrors |
 
 function passwordMatchValidator(group: AbstractControl): ValidationErrors | null {
   const password = group.get('password')?.value as string;
-  const confirm = group.get('confirmPassword')?.value as string;
+  const confirmCtrl = group.get('confirmPassword');
+  const confirm = confirmCtrl?.value as string;
   if (!password || !confirm) return null;
-  return password === confirm ? null : { passwordMismatch: true };
+  if (password !== confirm) {
+    confirmCtrl?.setErrors({ ...confirmCtrl.errors, passwordMismatch: true });
+    return { passwordMismatch: true };
+  }
+  // Clear only the mismatch error, preserve other errors
+  if (confirmCtrl?.hasError('passwordMismatch')) {
+    const { passwordMismatch, ...rest } = confirmCtrl.errors!;
+    confirmCtrl.setErrors(Object.keys(rest).length ? rest : null);
+  }
+  return null;
 }
 
 @Component({

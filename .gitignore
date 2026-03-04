@@ -9,6 +9,8 @@ frontend/.angular/
 
 # Testing
 frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 
 # Environment files
 frontend/.env

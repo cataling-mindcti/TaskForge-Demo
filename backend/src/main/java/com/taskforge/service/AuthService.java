@@ -72,7 +72,7 @@ public class AuthService {
         return authResponse;
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = {InvalidCredentialsException.class, AccountLockedException.class})
     public AuthResponse login(LoginRequest request, String ipAddress) {
         var user = userRepository.findByEmail(request.email())
                 .orElseThrow(() -> {
